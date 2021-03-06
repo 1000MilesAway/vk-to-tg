@@ -2,3 +2,4 @@
 **/__pycache__/
 /venv/
 settings.py
+vk_config.v2.json
