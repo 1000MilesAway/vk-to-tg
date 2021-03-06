@@ -7,7 +7,8 @@ import youtube_dl
 import os
 from datetime import datetime, timedelta
 import pymongo
-
+import tracemalloc
+import random
 
 class MongoCollection:
 
@@ -22,7 +23,7 @@ class MongoCollection:
     def insert(self, data):
         return self.collection.insert_one(data).inserted_id
 
-    def get(self, elements, multiple=True):
+    def get(self, elements=None, multiple=True):
         if multiple:
             results = self.collection.find(elements)
             return [r for r in results]
@@ -37,30 +38,26 @@ class Media:
 
     def __init__(self, post, source):
         try:
+            self.content = []
             self.text = post['text']
             self.date = datetime.fromtimestamp(post['date'])
             self.likes = post['likes']['count']
             self.views = post['views']['count']
             self.source = source
             if post['attachments'][0]['type'] == 'photo':
-                self.content = []
-                self.type = 'image'
                 for im in post['attachments']:
-                    self.content.append(im['photo']['sizes'][-1]['url'])
-
+                    self.content.append({"type": "image", "url": im['photo']['sizes'][-1]['url']})
             elif post['attachments'][0]['type'] == 'video':
-                self.content = []
-                self.type = 'video'
                 for vid in post['attachments']:
                     # response = vk.video.get(owner_id=post['owner_id'],
                     #                         videos=str(post['owner_id']) + "_" + str(vid['video']['id']))
-                    self.content.append('https://vk.com/video'+str(post['owner_id']) + "_" + str(vid['video']['id']))
+                    self.content.append({"type": "video", "url": 'https://vk.com/video'+str(post['owner_id']) + "_" + str(vid['video']['id'])})
         except Exception:
             pass
 
     def get_data(self):
         dick = {"text": self.text, "date": self.date, "likes": self.likes, "views": self.views,
-                "source": self.source, "type": self.type, "content": self.content}
+                "source": self.source, "content": self.content}
         return dick
 
 
@@ -80,47 +77,67 @@ class VKSession:
             print(error_msg)
         self.vk = self.vk_session.get_api()
 
-    def get_posts(self, vk_public, count=50):
-        most_views_posts = []
+    def parse_posts(self, vk_public, post_count, time_end, time_beg, count=50):
         posts = self.vk.wall.get(domain=vk_public, count=count)
         daily_posts = []
         for post in posts['items']:
             daily_posts.append(Media(post, vk_public))
-        daily_posts = [x for x in daily_posts if x.date > (datetime.today() - timedelta(days=1))]
-        most_views_posts.append(max(daily_posts, key=lambda post: post.likes))
-        for post in most_views_posts:
-            if post.content_type == 'image':
-                image_to_tg(post)
-            elif post.content_type == 'video':
-                video_to_tg(post)
+        daily_posts = [x for x in daily_posts if (x.date > time_beg) and (x.date < time_end)]
+        daily_posts.sort(key=lambda post: post.likes, reverse=True)
+        self.most_views_posts = daily_posts[0:post_count]
+
+    def write_to_bd(self, db_collection):
+
+        for post in self.most_views_posts:
+            db_collection.insert(post.get_data())
+        # for post in most_views_posts:
+        #     if post.type == 'image':
+        #         image_to_tg(post)
+        #     elif post.content_type == 'video':
+        #         video_to_tg(post)
 
 
-def video_to_tg(post):
-    ydl_opts = {'outtmpl': 'video.mp4'}
-    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([post.video[0]])
-    f = open("video.mp4", 'rb')
-    bot.send_video(-1001454625424, f)
-    os.remove("video.mp4")
+class TgBot:
+    def __init__(self):
+        self.bot = telebot.TeleBot(consts["TOKEN"])
+
+    def post_video(self, url):
+        ydl_opts = {'outtmpl': 'video.mp4'}
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            ydl.download(url)
+        f = open("video.mp4", 'rb')
+        self.bot.send_video(-1001454625424, f)
+        os.remove("video.mp4")
+
+    def post_image(self, url):
+        im = Image.open(requests.get(url, stream=True).raw)
+        self.bot.send_photo(-1001454625424, im)
 
 
-def image_to_tg(post):
-    im = Image.open(requests.get(post.image[0], stream=True).raw)
-    bot.send_photo(-1001454625424, im)
+def post_to_tg(db_collection):
+    tg = TgBot()
+    posts = db_collection.get()
+    if not posts:
+        return
+    random_post = random.choice(posts)
+    if len(random_post["content"]) == 1 and random_post["content"][0]["type"] == 'image':
+        tg.post_image(random_post["content"][0]["url"])
+    elif len(random_post["content"]) == 1 and random_post["content"][0]["type"] == 'video':
+        tg.post_video(random_post["content"][0]["url"])
+    elif len(random_post["content"]) > 1:
+        print("multiple content")
+    db_collection.delete({"_id": random_post["_id"]})
 
 
-
-bot = telebot.TeleBot(consts["TOKEN"])
 
 
 def main():
     memes_db = MongoCollection("channel_1")
-    memes_db.insert({"url": "sasis"})
-    pubs = ["ru2ch", "webmland"]
-
-
-    # post_to_tg(finall_posts)
-
+    # vk = VKSession()
+    # pubs = ["ru2ch", "webmland"]
+    # vk.parse_posts(pubs[0], 3, datetime.today() - timedelta(days=1), datetime.today() - timedelta(days=2))
+    # vk.write_to_bd(memes_db)
+    post_to_tg(memes_db)
 
 if __name__ == '__main__':
     main()
