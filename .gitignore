@@ -3,3 +3,4 @@
 /venv/
 settings.py
 vk_config.v2.json
+celerybeat-schedule

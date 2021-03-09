@@ -7,8 +7,9 @@ import youtube_dl
 import os
 from datetime import datetime, timedelta
 import pymongo
-import tracemalloc
 import random
+from pathlib import Path
+
 
 class MongoCollection:
 
@@ -21,7 +22,7 @@ class MongoCollection:
         return self.collection.name
 
     def insert(self, data):
-        return self.collection.insert_one(data).inserted_id
+        self.collection.insert(data)
 
     def get(self, elements=None, multiple=True):
         if multiple:
@@ -32,6 +33,9 @@ class MongoCollection:
 
     def delete(self, row):
         self.collection.delete_one(row)
+
+    def clear(self):
+        self.collection.drop()
 
 
 class Media:
@@ -84,17 +88,8 @@ class VKSession:
             daily_posts.append(Media(post, vk_public))
         daily_posts = [x for x in daily_posts if (x.date > time_beg) and (x.date < time_end)]
         daily_posts.sort(key=lambda post: post.likes, reverse=True)
-        self.most_views_posts = daily_posts[0:post_count]
+        return daily_posts[0:post_count]
 
-    def write_to_bd(self, db_collection):
-
-        for post in self.most_views_posts:
-            db_collection.insert(post.get_data())
-        # for post in most_views_posts:
-        #     if post.type == 'image':
-        #         image_to_tg(post)
-        #     elif post.content_type == 'video':
-        #         video_to_tg(post)
 
 
 class TgBot:
@@ -102,42 +97,38 @@ class TgBot:
         self.bot = telebot.TeleBot(consts["TOKEN"])
 
     def post_video(self, url):
-        ydl_opts = {'outtmpl': 'video.mp4'}
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            ydl.download(url)
-        f = open("video.mp4", 'rb')
+        os.system("youtube-dl -o vid.mp4 "+url+" -f url480")
+        f = open("vid.mp4", 'rb')
         self.bot.send_video(-1001454625424, f)
-        os.remove("video.mp4")
+        f.close()
+        os.remove("vid.mp4")
 
     def post_image(self, url):
         im = Image.open(requests.get(url, stream=True).raw)
         self.bot.send_photo(-1001454625424, im)
 
-
-def post_to_tg(db_collection):
-    tg = TgBot()
-    posts = db_collection.get()
-    if not posts:
-        return
-    random_post = random.choice(posts)
-    if len(random_post["content"]) == 1 and random_post["content"][0]["type"] == 'image':
-        tg.post_image(random_post["content"][0]["url"])
-    elif len(random_post["content"]) == 1 and random_post["content"][0]["type"] == 'video':
-        tg.post_video(random_post["content"][0]["url"])
-    elif len(random_post["content"]) > 1:
-        print("multiple content")
-    db_collection.delete({"_id": random_post["_id"]})
+    def post_message(self, text):
+        self.bot.send_message(-1001454625424, text)
 
 
 
 
 def main():
-    memes_db = MongoCollection("channel_1")
-    # vk = VKSession()
-    # pubs = ["ru2ch", "webmland"]
-    # vk.parse_posts(pubs[0], 3, datetime.today() - timedelta(days=1), datetime.today() - timedelta(days=2))
-    # vk.write_to_bd(memes_db)
-    post_to_tg(memes_db)
+    db_collection = MongoCollection("channel_1")
+    db_collection.clear()
+    vk = VKSession()
+    pubs = ["ru2ch", "webmland"]
+    posts = vk.parse_posts(pubs[1], 3, datetime.today() - timedelta(days=1), datetime.today() - timedelta(days=2))
+    db_collection.insert([post.get_data() for post in posts])
+
+    tg = TgBot()
+    posts = db_collection.get()
+    if not posts:
+        return
+    random_post = random.choice(posts)
+    tg = TgBot()
+    tg.post_video(random_post["content"][0]["url"])
+
 
 if __name__ == '__main__':
     main()
